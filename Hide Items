@@ -1,0 +1,203 @@
+// ==UserScript==
+// @name        Amazon Vine Hide Items
+// @match       https://www.amazon.ca/vine/vine-items*
+// @version     1.0
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    let hiddenItems = [];
+    let showingHidden = false;
+
+    function createToggleButton() {
+        // Check if button already exists
+        if (document.querySelector('.vine-toggle-hidden-btn')) return;
+
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = 'vine-toggle-hidden-btn';
+        toggleBtn.innerHTML = 'Show Hidden Items (0)';
+        
+        // Style the toggle button
+        toggleBtn.style.cssText = `
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            padding: 10px 15px;
+            background: #ff9900;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            z-index: 1000;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            transition: background 0.2s ease;
+        `;
+
+        // Hover effect
+        toggleBtn.addEventListener('mouseenter', () => {
+            toggleBtn.style.background = '#e68900';
+        });
+
+        toggleBtn.addEventListener('mouseleave', () => {
+            toggleBtn.style.background = '#ff9900';
+        });
+
+        // Click to toggle hidden items
+        toggleBtn.addEventListener('click', () => {
+            toggleHiddenItems();
+        });
+
+        document.body.appendChild(toggleBtn);
+        return toggleBtn;
+    }
+
+    function updateToggleButton() {
+        const toggleBtn = document.querySelector('.vine-toggle-hidden-btn');
+        if (toggleBtn) {
+            const count = hiddenItems.length;
+            if (showingHidden) {
+                toggleBtn.innerHTML = `Hide Hidden Items (${count})`;
+                toggleBtn.style.background = '#666';
+            } else {
+                toggleBtn.innerHTML = `Show Hidden Items (${count})`;
+                toggleBtn.style.background = '#ff9900';
+            }
+        }
+    }
+
+    function toggleHiddenItems() {
+        showingHidden = !showingHidden;
+        
+        hiddenItems.forEach(item => {
+            if (showingHidden) {
+                // Show hidden items with a different style
+                item.style.display = 'block';
+                item.style.opacity = '0.5';
+                item.style.border = '2px dashed #ff9900';
+                item.style.transition = 'all 0.3s ease';
+            } else {
+                // Hide them again
+                item.style.display = 'none';
+                item.style.border = '';
+            }
+        });
+
+        updateToggleButton();
+    }
+
+    function addHideButtons() {
+        // Find all item tiles
+        const itemTiles = document.querySelectorAll('.vvp-item-tile');
+        
+        itemTiles.forEach((tile, index) => {
+            // Skip if already has hide button
+            if (tile.querySelector('.vine-hide-btn')) return;
+            
+            // Create hide button
+            const hideBtn = document.createElement('button');
+            hideBtn.className = 'vine-hide-btn';
+            hideBtn.innerHTML = '×';
+            hideBtn.title = 'Hide this item';
+            
+            // Style the button
+            hideBtn.style.cssText = `
+                position: absolute;
+                top: 8px;
+                right: 8px;
+                width: 24px;
+                height: 24px;
+                border-radius: 50%;
+                border: 1px solid #ddd;
+                background: rgba(255, 255, 255, 0.9);
+                color: #666;
+                font-size: 16px;
+                font-weight: bold;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 10;
+                transition: all 0.2s ease;
+            `;
+            
+            // Hover effects
+            hideBtn.addEventListener('mouseenter', () => {
+                hideBtn.style.background = '#ff4444';
+                hideBtn.style.color = 'white';
+                hideBtn.style.borderColor = '#ff4444';
+            });
+            
+            hideBtn.addEventListener('mouseleave', () => {
+                hideBtn.style.background = 'rgba(255, 255, 255, 0.9)';
+                hideBtn.style.color = '#666';
+                hideBtn.style.borderColor = '#ddd';
+            });
+            
+            // Click to hide
+            hideBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                // Add to hidden items array
+                if (!hiddenItems.includes(tile)) {
+                    hiddenItems.push(tile);
+                }
+                
+                if (showingHidden) {
+                    // If we're showing hidden items, just apply the hidden styling
+                    tile.style.opacity = '0.5';
+                    tile.style.border = '2px dashed #ff9900';
+                    tile.style.transition = 'all 0.3s ease';
+                    tile.style.display = 'block'; // Make sure it stays visible
+                } else {
+                    // Only do the disappearing animation if we're NOT showing hidden items
+                    tile.style.transition = 'all 0.3s ease';
+                    tile.style.opacity = '0';
+                    tile.style.transform = 'scale(0.8)';
+                    
+                    setTimeout(() => {
+                        tile.style.display = 'none';
+                        tile.style.transform = '';
+                    }, 300);
+                }
+                
+                updateToggleButton();
+            });
+            
+            // Make tile container positioned relative for absolute positioning of button
+            tile.style.position = 'relative';
+            
+            // Add button to tile
+            tile.appendChild(hideBtn);
+        });
+    }
+    
+    // Initialize everything
+    function init() {
+        createToggleButton();
+        addHideButtons();
+    }
+    
+    // Add hide buttons when page loads
+    window.addEventListener('load', init);
+    
+    // Also add buttons if content loads dynamically
+    const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+            if (mutation.addedNodes.length) {
+                createToggleButton();
+                addHideButtons();
+            }
+        });
+    });
+    
+    // Start observing
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+    
+})();
