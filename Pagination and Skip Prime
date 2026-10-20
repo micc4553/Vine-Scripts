@@ -1,160 +1,516 @@
+
 // ==UserScript==
-// @name        Skip Prime Page on Amazon
+// @name        Pagination and Skip Prime
 // @namespace   Violentmonkey Scripts
 // @match       https://www.amazon.ca/*
-// @version     1.0
+// @version     1.7
+// @run-at      document-end
 // ==/UserScript==
 
-const skipPrimeLink = document.querySelector("#prime-decline-button");
-if (skipPrimeLink) {
-    skipPrimeLink.click();
-}
-
-(function() {
+(function () {
     'use strict';
 
-    const totalPages = 190;
+    // Prevent this userscript from initialising twice on the same page.
+    if (window.__vinePaginationAndSkipPrimeInstalled) return;
+    window.__vinePaginationAndSkipPrimeInstalled = true;
 
-    function addPaginationElements(ul, currentPage) {
+    const TOP_ID = 'custom-vine-top-pagination';
+    const REVIEWS_TOP_ID = 'custom-vine-reviews-top-pagination';
+
+    let enhanceTimer = null;
+
+    // Skip Prime when the decline button is available.
+    function skipPrime() {
+        const button = document.querySelector('#prime-decline-button');
+        if (button) button.click();
+    }
+
+    // Remove duplicate script-created rows and duplicate lists inside a row.
+    function deduplicateCustomPaginationRows() {
+        for (const id of [TOP_ID, REVIEWS_TOP_ID]) {
+            const wrappers = Array.from(
+                document.querySelectorAll(`#${id}`)
+            );
+
+            // Keep only one wrapper of each type.
+            wrappers.slice(1).forEach(wrapper => wrapper.remove());
+
+            // Ensure the surviving wrapper has only one pagination list.
+            const wrapper = document.getElementById(id);
+            if (wrapper) {
+                const lists = Array.from(
+                    wrapper.querySelectorAll('ul.a-pagination')
+                );
+
+                lists.slice(1).forEach(list => list.remove());
+            }
+        }
+    }
+
+    // Preserve queue, category, search, and other existing URL parameters.
+    function pageUrl(targetPage, isReviewPage = false) {
+        const url = new URL(window.location.href);
+
+        url.pathname = isReviewPage
+            ? '/vine/vine-reviews'
+            : '/vine/vine-items';
+
+        url.searchParams.set('page', String(targetPage));
+
+        if (!isReviewPage) {
+            if (!url.searchParams.has('queue')) {
+                url.searchParams.set('queue', 'encore');
+            }
+            if (!url.searchParams.has('pn')) {
+                url.searchParams.set('pn', '');
+            }
+            if (!url.searchParams.has('cn')) {
+                url.searchParams.set('cn', '');
+            }
+        }
+
+        return url.pathname + '?' + url.searchParams.toString();
+    }
+
+    function getTotalPages(pagination) {
+        let highest = 1;
+
+        if (!pagination) return highest;
+
+        pagination.querySelectorAll('a[href*="page="]').forEach(link => {
+            try {
+                const url = new URL(link.href);
+                const page = parseInt(url.searchParams.get('page'), 10);
+
+                if (Number.isInteger(page) && page > highest) {
+                    highest = page;
+                }
+            } catch (error) {
+                // Ignore malformed URLs.
+            }
+        });
+
+        return highest;
+    }
+
+    function getCurrentPage(paginations) {
+        const params = new URLSearchParams(window.location.search);
+        const fromUrl = parseInt(params.get('page'), 10);
+
+        if (Number.isInteger(fromUrl) && fromUrl > 0) {
+            return fromUrl;
+        }
+
+        for (const pagination of paginations) {
+            const selected = pagination.querySelector('li.a-selected a');
+            if (!selected) continue;
+
+            try {
+                const page = parseInt(
+                    new URL(selected.href).searchParams.get('page'),
+                    10
+                );
+
+                if (Number.isInteger(page) && page > 0) {
+                    return page;
+                }
+            } catch (error) {
+                // Check the next pagination element.
+            }
+        }
+
+        return 1;
+    }
+
+    function isBefore(elementA, elementB) {
+        return Boolean(
+            elementA.compareDocumentPosition(elementB) &
+            Node.DOCUMENT_POSITION_FOLLOWING
+        );
+    }
+
+    function addPaginationElements(
+        ul,
+        currentPage,
+        totalPages,
+        isReviewPage = false
+    ) {
+        totalPages = Math.max(10, totalPages, currentPage);
+
         let startPage = Math.max(2, currentPage - 4);
         let endPage = Math.min(totalPages - 1, currentPage + 4);
 
-        if (currentPage <= 5) { startPage = 2; endPage = Math.min(9, totalPages - 1); }
-        if (currentPage >= totalPages - 4) { startPage = Math.max(totalPages - 8, 2); endPage = totalPages - 1; }
-
-        // Prev arrow
-        const prevLi = document.createElement('li');
-        // Note: Previous button has no class in native HTML
-        const prevA = document.createElement('a');
-        prevA.href = `/vine/vine-items?queue=encore&pn=&cn=&page=${Math.max(1, currentPage - 1)}`;
-        prevA.innerHTML = '<span class="larr">←</span><span class="a-letter-space"></span><span class="a-letter-space"></span>Previous';
-        prevLi.appendChild(prevA);
-        ul.appendChild(prevLi);
-
-        // First page
-        const firstLi = document.createElement('li');
-        firstLi.className = currentPage === 1 ? 'a-selected' : 'a-normal';
-        const firstA = document.createElement('a');
-        firstA.href = `/vine/vine-items?queue=encore&pn=&cn=&page=1`;
-        firstA.textContent = '1';
-        if (currentPage === 1) firstA.setAttribute('aria-current', 'page');
-        firstLi.appendChild(firstA);
-        ul.appendChild(firstLi);
-
-        // Left ellipsis
-        if (startPage > 2) {
-            const ellipsisLi = document.createElement('li');
-            ellipsisLi.className = 'a-disabled';
-            ellipsisLi.setAttribute('aria-disabled', 'true');
-            ellipsisLi.textContent = '...';
-            ul.appendChild(ellipsisLi);
+        if (currentPage <= 5) {
+            startPage = 2;
+            endPage = Math.min(9, totalPages - 1);
         }
 
-        // Middle pages
-        for (let i = startPage; i <= endPage; i++) {
+        if (currentPage >= totalPages - 4) {
+            startPage = Math.max(2, totalPages - 8);
+            endPage = totalPages - 1;
+        }
+
+        function addPage(page) {
             const li = document.createElement('li');
-            li.className = i === currentPage ? 'a-selected' : 'a-normal';
+            li.className = page === currentPage ? 'a-selected' : 'a-normal';
+
             const a = document.createElement('a');
-            a.href = `/vine/vine-items?queue=encore&pn=&cn=&page=${i}`;
-            a.textContent = i;
-            if (i === currentPage) a.setAttribute('aria-current', 'page');
+            a.href = pageUrl(page, isReviewPage);
+            a.textContent = String(page);
+
+            if (page === currentPage) {
+                a.setAttribute('aria-current', 'page');
+            }
+
             li.appendChild(a);
             ul.appendChild(li);
         }
 
-        // Right ellipsis
-        if (endPage < totalPages - 1) {
-            const ellipsisLi = document.createElement('li');
-            ellipsisLi.className = 'a-disabled';
-            ellipsisLi.setAttribute('aria-disabled', 'true');
-            ellipsisLi.textContent = '...';
-            ul.appendChild(ellipsisLi);
+        // Previous.
+        const previousLi = document.createElement('li');
+        const previousA = document.createElement('a');
+
+        previousA.href = pageUrl(
+            Math.max(1, currentPage - 1),
+            isReviewPage
+        );
+
+        previousA.innerHTML =
+            '<span class="larr">←</span>' +
+            '<span class="a-letter-space"></span>' +
+            '<span class="a-letter-space"></span>Previous';
+
+        previousLi.appendChild(previousA);
+        ul.appendChild(previousLi);
+
+        // Page 1.
+        addPage(1);
+
+        // Left ellipsis.
+        if (startPage > 2) {
+            const li = document.createElement('li');
+            li.className = 'a-disabled';
+            li.setAttribute('aria-disabled', 'true');
+            li.textContent = '...';
+            ul.appendChild(li);
         }
 
-        // Last page
-        const lastLi = document.createElement('li');
-        lastLi.className = currentPage === totalPages ? 'a-selected' : 'a-normal';
-        const lastA = document.createElement('a');
-        lastA.href = `/vine/vine-items?queue=encore&pn=&cn=&page=${totalPages}`;
-        lastA.textContent = totalPages;
-        if (currentPage === totalPages) lastA.setAttribute('aria-current', 'page');
-        lastLi.appendChild(lastA);
-        ul.appendChild(lastLi);
+        // Middle pages.
+        for (let page = startPage; page <= endPage; page++) {
+            addPage(page);
+        }
 
-        // Next arrow
+        // Right ellipsis.
+        if (endPage < totalPages - 1) {
+            const li = document.createElement('li');
+            li.className = 'a-disabled';
+            li.setAttribute('aria-disabled', 'true');
+            li.textContent = '...';
+            ul.appendChild(li);
+        }
+
+        // Last page.
+        if (totalPages > 1) {
+            addPage(totalPages);
+        }
+
+        // Next.
         const nextLi = document.createElement('li');
-        nextLi.className = 'a-last';  // Next button uses a-last class
+        nextLi.className = 'a-last';
+
         const nextA = document.createElement('a');
-        nextA.href = `/vine/vine-items?queue=encore&pn=&cn=&page=${Math.min(totalPages, currentPage + 1)}`;
-        nextA.innerHTML = 'Next<span class="a-letter-space"></span><span class="a-letter-space"></span><span class="larr">→</span>';
+        nextA.href = pageUrl(
+            Math.min(totalPages, currentPage + 1),
+            isReviewPage
+        );
+
+        nextA.innerHTML =
+            'Next<span class="a-letter-space"></span>' +
+            '<span class="a-letter-space"></span>' +
+            '<span class="larr">→</span>';
+
         nextLi.appendChild(nextA);
         ul.appendChild(nextLi);
     }
 
-    function createPagination(currentPage, isTop = false) {
-        // For top pagination, create just the ul element like the bottom one
-        if (isTop) {
-            const ul = document.createElement('ul');
-            ul.className = 'a-pagination';
-            ul.style.display = 'inline-block';
-            ul.style.margin = '0px';
-            ul.style.padding = '0px';
-            return ul;
-        }
-
-        // For bottom pagination, keep the wrapper
+    function createTopPagination(
+        currentPage,
+        totalPages,
+        isReviewPage = false
+    ) {
         const wrapper = document.createElement('div');
+
+        wrapper.id = isReviewPage ? REVIEWS_TOP_ID : TOP_ID;
         wrapper.style.textAlign = 'center';
         wrapper.style.margin = '10px 0';
         wrapper.style.width = '100%';
-        wrapper.style.display = 'block';
 
         const ul = document.createElement('ul');
         ul.className = 'a-pagination';
         ul.style.display = 'inline-block';
-        ul.style.margin = '0px';
-        ul.style.padding = '0px';
+        ul.style.margin = '0';
+        ul.style.padding = '0';
 
-        // Add pagination elements to the ul
-        addPaginationElements(ul, currentPage);
+        addPaginationElements(
+            ul,
+            currentPage,
+            totalPages,
+            isReviewPage
+        );
 
         wrapper.appendChild(ul);
         return wrapper;
     }
 
-    function enhancePagination() {
-        const paginationBottom = document.querySelector('ul.a-pagination');
-        if (!paginationBottom) return;
+    // Detect newly inserted Amazon pagination without reacting to our own rows.
+    function containsAmazonPagination(node) {
+        if (!(node instanceof Element)) return false;
 
-        const currentPageLi = paginationBottom.querySelector('li.a-selected a');
-        if (!currentPageLi) return;
-        const urlParams = new URLSearchParams(currentPageLi.href.split('?')[1]);
-        const currentPage = parseInt(urlParams.get('page')) || 1;
+        // Ignore our own wrapper or anything inside it.
+        if (
+            node.matches(`#${TOP_ID}, #${REVIEWS_TOP_ID}`) ||
+            node.closest(`#${TOP_ID}, #${REVIEWS_TOP_ID}`)
+        ) {
+            return false;
+        }
 
-        const newBottom = createPagination(currentPage, false);
-        paginationBottom.replaceWith(newBottom);
+        const candidates = [];
 
-        // Find the items grid and insert top pagination before it
+        if (
+            node.matches(
+                'ul.a-pagination, #vvp-items-grid, ' +
+                '.vvp-reviews-table--heading-top'
+            )
+        ) {
+            candidates.push(node);
+        }
+
+        candidates.push(
+            ...node.querySelectorAll(
+                'ul.a-pagination, #vvp-items-grid, ' +
+                '.vvp-reviews-table--heading-top'
+            )
+        );
+
+        return candidates.some(element =>
+            !element.closest(`#${TOP_ID}, #${REVIEWS_TOP_ID}`)
+        );
+    }
+
+    function enhanceVineItemsPagination() {
+        // Clear stale custom rows before examining Amazon's native rows.
+        document.querySelectorAll(`#${TOP_ID}`).forEach(row => row.remove());
+
         const itemsGrid = document.querySelector('#vvp-items-grid');
-        if (itemsGrid) {
-            // Create top pagination with exact same structure as bottom
-            const newTopUl = createPagination(currentPage, true);
 
-            // Add all the pagination elements to the ul
-            addPaginationElements(newTopUl, currentPage);
+        const paginations = Array.from(
+            document.querySelectorAll('ul.a-pagination')
+        );
 
-            // Create a centered container for the top pagination (matching bottom)
-            const topContainer = document.createElement('div');
-            topContainer.style.textAlign = 'center';
-            topContainer.style.margin = '10px 0px';
-            topContainer.style.width = '100%';
-            topContainer.style.display = 'block';
-            topContainer.appendChild(newTopUl);
+        if (!itemsGrid && paginations.length === 0) return;
 
-            // Insert before the items grid
-            itemsGrid.parentNode.insertBefore(topContainer, itemsGrid);
+        const currentPage = getCurrentPage(paginations);
+        const totalPages = Math.max(
+            10,
+            currentPage,
+            ...paginations.map(getTotalPages)
+        );
+
+        // If the grid is not available yet, update one existing row.
+        if (!itemsGrid) {
+            if (paginations.length > 0) {
+                paginations[0].replaceChildren();
+
+                addPaginationElements(
+                    paginations[0],
+                    currentPage,
+                    totalPages
+                );
+
+                paginations.slice(1).forEach(row => row.remove());
+            }
+            return;
+        }
+
+        // Classify native rows by their position relative to the items grid.
+        const topRows = paginations.filter(row =>
+            isBefore(row, itemsGrid)
+        );
+
+        const bottomRows = paginations.filter(row =>
+            isBefore(itemsGrid, row)
+        );
+
+        const topRow = topRows[0] || null;
+        const bottomRow = bottomRows[0] || null;
+
+        // Remove extra rows from each position.
+        topRows.slice(1).forEach(row => row.remove());
+        bottomRows.slice(1).forEach(row => row.remove());
+
+        // Remove rows that could not be classified.
+        const classifiedRows = new Set([...topRows, ...bottomRows]);
+
+        paginations.forEach(row => {
+            if (!classifiedRows.has(row)) {
+                row.remove();
+            }
+        });
+
+        // Modify the surviving Amazon rows.
+        [topRow, bottomRow].forEach(row => {
+            if (!row || !row.isConnected) return;
+
+            row.replaceChildren();
+            addPaginationElements(row, currentPage, totalPages);
+        });
+
+        // Create a script-owned top row only if no native top row exists.
+        if (!topRow && itemsGrid.parentNode) {
+            // Remove any existing custom top rows immediately before creation.
+            document.querySelectorAll(`#${TOP_ID}`).forEach(row => row.remove());
+
+            itemsGrid.parentNode.insertBefore(
+                createTopPagination(currentPage, totalPages),
+                itemsGrid
+            );
         }
     }
 
-    window.addEventListener('load', enhancePagination);
+    function enhanceReviewsPagination() {
+        document.querySelectorAll(`#${REVIEWS_TOP_ID}`).forEach(
+            row => row.remove()
+        );
+
+        const heading = document.querySelector(
+            '.vvp-reviews-table--heading-top'
+        );
+
+        const paginations = Array.from(
+            document.querySelectorAll('ul.a-pagination')
+        );
+
+        const currentPage = getCurrentPage(paginations);
+        const totalPages = Math.max(
+            10,
+            currentPage,
+            ...paginations.map(getTotalPages)
+        );
+
+        if (!heading) {
+            if (paginations.length > 0) {
+                paginations[0].replaceChildren();
+
+                addPaginationElements(
+                    paginations[0],
+                    currentPage,
+                    totalPages,
+                    true
+                );
+
+                paginations.slice(1).forEach(row => row.remove());
+            }
+            return;
+        }
+
+        const topRows = paginations.filter(row =>
+            isBefore(row, heading)
+        );
+
+        const bottomRows = paginations.filter(row =>
+            isBefore(heading, row)
+        );
+
+        const topRow = topRows[0] || null;
+        const bottomRow = bottomRows[0] || null;
+
+        topRows.slice(1).forEach(row => row.remove());
+        bottomRows.slice(1).forEach(row => row.remove());
+
+        const classifiedRows = new Set([...topRows, ...bottomRows]);
+
+        paginations.forEach(row => {
+            if (!classifiedRows.has(row)) {
+                row.remove();
+            }
+        });
+
+        [topRow, bottomRow].forEach(row => {
+            if (!row || !row.isConnected) return;
+
+            row.replaceChildren();
+            addPaginationElements(
+                row,
+                currentPage,
+                totalPages,
+                true
+            );
+        });
+
+        if (!topRow && heading.parentNode) {
+            document.querySelectorAll(`#${REVIEWS_TOP_ID}`).forEach(
+                row => row.remove()
+            );
+
+            heading.parentNode.insertBefore(
+                createTopPagination(currentPage, totalPages, true),
+                heading
+            );
+        }
+    }
+
+    function enhancePagination() {
+        skipPrime();
+
+        const path = window.location.pathname;
+
+        if (path.includes('/vine/vine-items')) {
+            enhanceVineItemsPagination();
+        } else if (path.includes('/vine/vine-reviews')) {
+            enhanceReviewsPagination();
+        }
+
+        // Final safety check after every enhancement.
+        deduplicateCustomPaginationRows();
+    }
+
+    // Debounce Amazon's DOM updates, but use 100 ms instead of 700 ms.
+    function scheduleEnhancement() {
+        clearTimeout(enhanceTimer);
+
+        enhanceTimer = setTimeout(() => {
+            enhanceTimer = null;
+            enhancePagination();
+        }, 100);
+    }
+
+    // Watch for Amazon adding pagination after the initial page load.
+    const observer = new MutationObserver(mutations => {
+        // Repair duplicate custom rows whenever the page changes.
+        deduplicateCustomPaginationRows();
+
+        const paginationWasAdded = mutations.some(mutation =>
+            Array.from(mutation.addedNodes).some(
+                containsAmazonPagination
+            )
+        );
+
+        if (paginationWasAdded) {
+            scheduleEnhancement();
+        }
+    });
+
+    observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true
+    });
+
+    // Initial run and another opportunity after the page finishes loading.
+    scheduleEnhancement();
+
+    window.addEventListener(
+        'load',
+        scheduleEnhancement,
+        { once: true }
+    );
 })();
