@@ -1,0 +1,84 @@
+
+ // ==UserScript==
+ // @name         Vine Auto Checkout
+ // @namespace    local.vine.autocheckout
+ // @version      1.5
+ // @description  Declines Prime and submits checkout only at $0.00.
+ // @match        https://www.amazon.ca/checkout/*
+ // @match        https://www.amazon.ca/gp/buy/*
+ // @grant        none
+ // @run-at       document-end
+ // ==/UserScript==
+
+(function () {
+  'use strict';
+
+  let primeClicked = false;
+  let orderClicked = false;
+  let observer;
+
+  function visible(el) {
+    return !!el &&
+      (el.offsetParent !== null || el.getClientRects().length > 0);
+  }
+
+  function skipPrime() {
+    const button = document.querySelector('#prime-decline-button');
+    if (button) button.click();
+  }
+
+  function readOrderTotal() {
+    const el = document.querySelector(
+      '[data-shimmer-target="ordertotals-amount"]'
+    );
+
+    const match = el?.textContent.trim().match(
+      /^\$?\s*([\d,]+\.\d{2})$/
+    );
+
+    return match ? Number(match[1].replace(/,/g, '')) : null;
+  }
+
+  function step() {
+    if (orderClicked) return;
+
+    const prime = document.querySelector('#prime-decline-button');
+
+    if (prime && visible(prime)) {
+      if (primeClicked) return;
+      if (prime.disabled) return;
+
+      primeClicked = true;
+      skipPrime();
+      return;
+    }
+
+    const button = document.querySelector(
+      '#placeOrder[data-testid="SPC_selectPlaceOrder"]'
+    );
+
+    if (!button || !visible(button) || button.disabled) return;
+
+    // Never submit unless the total is readable and exactly $0.00.
+    if (readOrderTotal() !== 0) return;
+
+    orderClicked = true;
+    observer.disconnect();
+    button.click();
+  }
+
+  observer = new MutationObserver(step);
+
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: [
+      'disabled', 'class', 'style', 'hidden',
+      'aria-disabled', 'aria-hidden'
+    ]
+  });
+
+  step();
+})();
